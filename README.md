@@ -1,4 +1,4 @@
 # debian
 ```shell
-sudo apt update && sudo apt upgrade -y && sudo reboot
+https://raw.githubusercontent.com/bibicadotnet/ubuntu-22.04/main/setup.sh
 ```
