@@ -1,14 +1,48 @@
 #!/usr/bin/env bash
+################################################################################
+# This is property of eXtremeSHOK.com
+# You are free to use, modify and distribute, however you may not remove this notice.
+# Copyright (c) Adrian Jon Kriel :: admin@extremeshok.com
+################################################################################
+#
+# Script updates can be found at: https://github.com/extremeshok/xshok-docker
+#
+# Ubuntu to optimised docker host, will optimise and install utilities, docker, docker-composer
+#
+# License: BSD (Berkeley Software Distribution)
+#
+################################################################################
+#
+# Assumptions: Ubuntu installed
+#
+# Tested on KVM, VirtualBox and Dedicated Server
+#
+# Notes:
+# to disable the MOTD banner, set the env NO_MOTD_BANNER to true (export NO_MOTD_BANNER=true)
+# to set the swapfile size to 1GB, set the env SWAPFILE_SIZE to 1 (export SWAPFILE_SIZE=1)
+#
+# Usage:
+# wget https://raw.githubusercontent.com/extremeshok/xshok-docker/master/xshok-ubuntu-docker-host.sh -O xshok-ubuntu-docker-host.sh && chmod +x xshok-ubuntu-docker-host.sh && ./xshok-ubuntu-docker-host.sh
+#
+################################################################################
+#
+#    THERE ARE NO USER CONFIGURABLE OPTIONS IN THIS SCRIPT
+#
+################################################################################
 
 # Set the local
 export LANG="en_US.UTF-8"
 export LC_ALL="C"
 
-apt install sudo -y
-sudo apt install htop -y
-sudo apt install wget -y
-sudo apt install curl -y
+if [ "$(lsb_release -i 2>/dev/null | cut -f 2 | xargs)" != "Ubuntu" ] ; then
+  echo "ERROR: This script only supports Ubuntu"
+  exit 1
+fi
 
+if [ -f "/etc/extremeshok" ] ; then
+  echo "Script can only be run once"
+  exit 1
+fi
 
 ## Force APT to use IPv4
 echo -e "Acquire::ForceIPv4 \"true\";\\n" > /etc/apt/apt.conf.d/99force-ipv4
@@ -86,21 +120,6 @@ fi
 systemctl disable rpcbind
 systemctl stop rpcbind
 
-## Disable SSH password logins for root user (security)
-if cat "${HOME}/.ssh/authorized_keys" | tail -n 1 | cut -d' ' -f 1 | grep -q 'ssh-' ; then
-  echo "SSH authorized_keys detected, Disabling password login"
-  sed -i 's|#PermitRootLogin yes|PermitRootLogin without-password|g' /etc/ssh/sshd_config
-  sed -i 's|PermitRootLogin yes|PermitRootLogin without-password|g' /etc/ssh/sshd_config
-  sed -i 's|#PermitRootLogin no|PermitRootLogin without-password|g' /etc/ssh/sshd_config
-  sed -i 's|PermitRootLogin no|PermitRootLogin without-password|g' /etc/ssh/sshd_config
-  sed -i 's|#HostKey /etc/|HostKey /etc/|g' /etc/ssh/sshd_config
-  sed -i 's|#UseDNS yes|UseDNS no|g' /etc/ssh/sshd_config
-  sed -i 's|UseDNS yes|UseDNS no|g' /etc/ssh/sshd_config
-  sed -i 's|#MaxAuthTries 6|MaxAuthTries 3|g' /etc/ssh/sshd_config
-  sed -i 's|MaxAuthTries 6|#MaxAuthTries 3|g' /etc/ssh/sshd_config
-  systemctl reload ssh
-fi
-
 ## Disable local dns server, do not disable systemd-resolved as this breaks nameservers configured with netplan
 sed -i 's|#DNSStubListener=yes|DNSStubListener=no|g' /etc/systemd/resolved.conf
 sed -i 's|DNSStubListener=yes|DNSStubListener=no|g' /etc/systemd/resolved.conf
@@ -111,7 +130,7 @@ systemctl enable systemd-resolved.service
 
 
 ## Set Timezone to UTC and enable NTP
-timedatectl set-timezone UTC
+timedatectl set-timezone Asia/Ho_Chi_Minh
 cat <<'EOF' > /etc/systemd/timesyncd.conf
 [Time]
 NTP=0.pool.ntp.org 1.pool.ntp.org 2.pool.ntp.org 3.pool.ntp.org
@@ -122,8 +141,6 @@ PollIntervalMaxSec=2048
 EOF
 service systemd-timesyncd start
 timedatectl set-ntp true
-
-
 
 ## Increase max user watches
 # BUG FIX : No space left on device
@@ -147,7 +164,6 @@ root hard     nproc          256000
 root soft     nofile         256000
 root hard     nofile         256000
 EOF
-
 
 ## Set systemd ulimits
 echo "DefaultLimitNOFILE=256000" >> /etc/systemd/system.conf
@@ -268,99 +284,6 @@ net.netfilter.nf_conntrack_max = 524288
 net.netfilter.nf_conntrack_tcp_timeout_established = 28800
 net.unix.max_dgram_qlen = 4096
 EOF
-
-
-## Disable Transparent Hugepage, required for mongodb, redis
-cat <<EOF > /etc/systemd/system/docker-hugepage-fix.service
-[Unit]
-Description="Disable Transparent Hugepage before Docker boots"
-Before=docker.service
-
-[Service]
-Type=oneshot
-ExecStart=/bin/bash -c 'echo never > /sys/kernel/mm/transparent_hugepage/enabled'
-ExecStart=/bin/bash -c 'echo never > /sys/kernel/mm/transparent_hugepage/defrag'
-
-[Install]
-RequiredBy=docker.service
-EOF
-systemctl daemon-reload
-systemctl enable docker-hugepage-fix
-
-## Ensure Entropy Pools are Populated, prevents slowdowns whilst waiting for entropy
-/usr/bin/env DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::='--force-confdef' install haveged
-## Net optimising
-cat <<EOF > /etc/default/haveged
-# eXtremeSHOK.com
-#   -w sets low entropy watermark (in bits)
-DAEMON_ARGS="-w 1024"
-EOF
-systemctl daemon-reload
-systemctl enable haveged
-
-# Enable logrotate
-mkdir -p /etc/logrotate.d/
-cat <<EOF > /etc/logrotate.conf
-# eXtremeSHOK.com
-daily
-su root adm
-rotate 7
-create
-compress
-size=10M
-delaycompress
-copytruncate
-
-include /etc/logrotate.d
-EOF
-## Truncate Docker Logs (mitigate log kreep)
-cat <<EOF > /etc/logrotate.d/docker-logs
-# eXtremeSHOK.com
-/var/lib/docker/containers/*/*.log {
- rotate 7
- daily
- compress
- size=10M
- missingok
- delaycompress
- copytruncate
-}
-EOF
-systemctl restart logrotate.service
-
-
-## Limit the size and optimise journald
-cat <<EOF > /etc/systemd/journald.conf
-# eXtremeSHOK.com
-[Journal]
-# Store on disk
-Storage=persistent
-# Don't split Journald logs by user
-SplitMode=none
-# Disable rate limits
-RateLimitInterval=0
-RateLimitIntervalSec=0
-RateLimitBurst=0
-# Disable Journald forwarding to syslog
-ForwardToSyslog=no
-# Journald forwarding to wall /var/log/kern.log
-ForwardToWall=yes
-# Disable signing of the logs, save cpu resources.
-Seal=no
-Compress=yes
-# Fix the log size
-SystemMaxUse=64M
-RuntimeMaxUse=60M
-# Optimise the logging and speed up tasks
-MaxLevelStore=warning
-MaxLevelSyslog=warning
-MaxLevelKMsg=warning
-MaxLevelConsole=notice
-MaxLevelWall=crit
-EOF
-systemctl restart systemd-journald.service
-journalctl --vacuum-size=64M --vacuum-time=1d;
-journalctl --rotate
 
 ## Script Finish
 echo -e '\033[1;33m Finished....please restart the system \033[0m'
